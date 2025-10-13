@@ -1,0 +1,129 @@
+from flask import Flask, request, redirect, url_for, session, render_template_string
+import sqlite3
+from werkzeug.security import generate_password_hash, check_password_hash
+from pathlib import Path
+
+app = Flask(__name__)
+app.secret_key = "change_this_to_a_random_secret"
+
+DB_PATH = Path(__file__).with_name("users.db")
+
+HTML_BASE = """
+<!doctype html>
+<title>{{title}}</title>
+<h2>{{title}}</h2>
+<div>
+  {% block body %}{% endblock %}
+</div>
+"""
+
+HTML_REGISTER = """
+{% extends "base" %}
+{% block body %}
+<form method="post">
+  Username: <input name="username" required><br><br>
+  Password: <input name="password" type="password" required><br><br>
+  <button type="submit">Register</button>
+</form>
+<p style="color:green">{{msg}}</p>
+<p><a href="{{url_for('login')}}">Login</a></p>
+{% endblock %}
+"""
+
+HTML_LOGIN = """
+{% extends "base" %}
+{% block body %}
+<form method="post">
+  Username: <input name="username" required><br><br>
+  Password: <input name="password" type="password" required><br><br>
+  <button type="submit">Login</button>
+</form>
+<p style="color:red">{{error}}</p>
+<p><a href="{{url_for('register')}}">Register</a></p>
+{% endblock %}
+"""
+
+HTML_DASH = """
+{% extends "base" %}
+{% block body %}
+<p>Welcome, {{user}}!</p>
+<p><a href="{{url_for('logout')}}">Logout</a></p>
+{% endblock %}
+"""
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    if not DB_PATH.exists():
+        conn = get_db()
+        conn.execute("""
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+@app.before_first_request
+def startup():
+    init_db()
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    msg = ""
+    if request.method == "POST":
+        u = request.form["username"].strip()
+        p = request.form["password"]
+        if not u or not p:
+            msg = "Missing username or password."
+        else:
+            pw_hash = generate_password_hash(p)
+            try:
+                conn = get_db()
+                conn.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)", (u, pw_hash))
+                conn.commit()
+                conn.close()
+                msg = "Registered successfully. You can now log in."
+            except sqlite3.IntegrityError:
+                msg = "Username already taken."
+    return render_template_string(HTML_REGISTER, title="Register", msg=msg)
+
+@app.route("/", methods=["GET", "POST"])
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = ""
+    if request.method == "POST":
+        u = request.form["username"].strip()
+        p = request.form["password"]
+        conn = get_db()
+        user = conn.execute("SELECT * FROM users WHERE username = ?", (u,)).fetchone()
+        conn.close()
+        if user and check_password_hash(user["password_hash"], p):
+            session["user"] = u
+            return redirect(url_for("dashboard"))
+        error = "Invalid credentials."
+    return render_template_string(HTML_LOGIN, title="Login", error=error)
+
+@app.route("/dashboard")
+def dashboard():
+    if "user" not in session:
+        return redirect(url_for("login"))
+    return render_template_string(HTML_DASH, title="Dashboard", user=session["user"])
+
+@app.route("/logout")
+def logout():
+    session.pop("user", None)
+    return redirect(url_for("login"))
+
+# register the base template so render_template_string can extend it
+@app.context_processor
+def inject_base():
+    return {"base": HTML_BASE}
+
+if __name__ == "__main__":
+    app.run(debug=True)
